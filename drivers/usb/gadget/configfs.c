@@ -1946,7 +1946,10 @@ static int android_setup(struct usb_gadget *gadget,
 
 	if (c->bRequest == USB_REQ_SET_CONFIGURATION &&
 						cdev->config) {
-		schedule_work(&gi->work);
+		// avoid 21.09(HID_REQ_SET_REPORT) trigger this
+		if ((c->bRequestType & USB_TYPE_MASK) == USB_TYPE_STANDARD) {
+			schedule_work(&gi->work);
+		}
 	}
 	spin_unlock_irqrestore(&cdev->lock, flags);
 
@@ -2064,6 +2067,29 @@ functions_show(struct device *pdev, struct device_attribute *attr, char *buf)
 	return buff - buf;
 }
 
+/**
+ * "audio_source&2", "&" => [part1 = "audio_source",part2 = "2"]
+*/
+static void extract_parts(const char *str, char *part1, char *part2, char delimiter) {
+    const char *p = str;
+    int i = 0;
+
+    while (*p != '\0' && *p != delimiter) {
+        part1[i++] = *p++;
+    }
+    part1[i] = '\0';
+
+    if (*p == delimiter) {
+        p++;
+    }
+
+    i = 0;
+    while (*p != '\0') {
+        part2[i++] = *p++;
+    }
+    part2[i] = '\0';
+}
+
 static ssize_t
 functions_store(struct device *pdev, struct device_attribute *attr,
 					const char *buff, size_t size)
@@ -2073,8 +2099,16 @@ functions_store(struct device *pdev, struct device_attribute *attr,
 	struct usb_configuration *c;
 	struct config_usb_cfg *cfg;
 	struct usb_function *f, *tmp;
-	char *name;
+	char *name;	
+	char name_real[128];
+	char name_cfg[128];
+	int name_cfg_index;
+	bool is_have_index = false;
+	bool is_fun_found = false;
 	char buf[256], *b;
+	int cfg_index;
+	bool cleared_list = false;
+	struct gadget_info *gi;
 
 	cdev = &dev->cdev;
 	if (!cdev)
@@ -2100,10 +2134,29 @@ functions_store(struct device *pdev, struct device_attribute *attr,
 		if (!name)
 			continue;
 
+		is_have_index = strchr(name, '&') != NULL;
+		if ( is_have_index && !cleared_list) {
+			pr_info("clear_current_usb_link before okcar functions_store\n");
+			gi = container_of(cdev, struct gadget_info, cdev);
+			if (!list_empty(&gi->linked_func) || !list_empty(&cfg->func_list)) {				
+				clear_current_usb_link(cdev);
+				gi->symboliclink_change_mode = 0;
+			}			
+			cleared_list = true;
+		}
+		if (is_have_index) {
+			extract_parts(name, name_real, name_cfg, '&');
+			name_cfg_index = (int)simple_strtol(name_cfg, NULL, 10);
+		}
+		cfg_index = 0;
+		is_fun_found = false; // One item corresponds to one function, and once a match is found, the loop is exited
+
 		list_for_each_entry(c, &cdev->configs, list) {
 			cfg = container_of(c, struct config_usb_cfg, c);
+			cfg_index++;
 			list_for_each_entry_safe(f, tmp, &dev->linked_func, list) {
-				if (!strcmp(f->name, name)) {
+				// pr_err("name_real:%s name_cfg_index:%d\n", name_real, name_cfg_index);
+				if ((is_have_index ? (cfg_index == name_cfg_index && !strcmp(f->name, name_real)) : (!strcmp(f->name, name)))) {
 					pr_err("usb: %s: enable device[%s]\n", __func__, name);
 #ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
 					if (!strcmp(f->name, "acm")) {
@@ -2122,7 +2175,14 @@ functions_store(struct device *pdev, struct device_attribute *attr,
 					}
 #endif
 					list_move_tail(&f->list, &cfg->func_list);
+					if (is_have_index) {
+						is_fun_found = true;
+						break;
+					}
 				}
+			}
+			if (is_have_index && is_fun_found) {				
+				break;
 			}
 		}
 	}

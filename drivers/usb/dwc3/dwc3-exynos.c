@@ -277,6 +277,66 @@ void dwc3_exynos_rsw_exit(struct device *dev)
 	rsw->fsm = NULL;
 }
 
+struct platform_device *pdev_main = NULL;
+int okcar_usbmode_get(void) {
+	struct dwc3_exynos	*exynos;
+	struct dwc3_exynos_rsw	*rsw;
+	struct otg_fsm		*fsm;
+	if (pdev_main == NULL) {
+		return -1;
+	}
+	exynos = platform_get_drvdata(pdev_main);
+	if (!exynos)
+		return -1;
+
+	rsw = &exynos->rsw;
+	fsm = rsw->fsm;
+	if (!fsm)
+		return -1;
+
+	if (!fsm->id) {
+		return 2;
+	} else {
+		return fsm->b_sess_vld ? 1 : 0;
+	}
+}
+EXPORT_SYMBOL(okcar_usbmode_get);
+
+void okcar_usbmode_toggle(int mode)
+{
+	struct dwc3_exynos	*exynos;
+	struct dwc3_exynos_rsw	*rsw;
+	struct otg_fsm		*fsm;
+	if (pdev_main == NULL) {
+		return;
+	}
+	exynos = platform_get_drvdata(pdev_main);
+	if (!exynos)
+		return;
+
+	rsw = &exynos->rsw;
+	fsm = rsw->fsm;
+	if (!fsm)
+		return;
+
+	if (mode == 1) {
+		// Device
+		fsm->id = 1;
+		fsm->b_sess_vld = 1;
+	} else if ( mode == 2) {
+		// Host
+		fsm->id = 0;
+		fsm->b_sess_vld = 0;
+	} else {
+		// None
+		fsm->id = 1;
+		fsm->b_sess_vld = 0;
+	}
+
+	schedule_work(&rsw->work);
+}
+EXPORT_SYMBOL(okcar_usbmode_toggle);
+
 /**
  * dwc3_exynos_id_event - receive ID pin state change event.
  * @state : New ID pin state.
@@ -571,6 +631,7 @@ static int dwc3_exynos_probe(struct platform_device *pdev)
 		goto populate_err;
 	}
 
+	pdev_main = pdev;
 	pr_info("%s: ---\n", __func__);
 	return 0;
 
